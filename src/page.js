@@ -61,6 +61,9 @@ function chips(label, options, onPick) {
   return { wrap, select };
 }
 
+/** The chart cuts a long axis label at its own width, so the title is shortened here and the project keeps its room. */
+const shorten = (text, max = 22) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
 const isoHour = (ms) => new Date(ms).toISOString().slice(0, 16);
 
 export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVersion }) {
@@ -462,7 +465,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       built.topRows = result.toArray().map((r, i) => {
         const row = r.toJSON();
         const title = String(row.page_title).replaceAll('_', ' ');
-        return { id: i, label: state.project ? title : `${title} · ${row.project}`, views: num(row.views) };
+        return { id: i, label: state.project ? title : `${shorten(title)} · ${String(row.project).replace(/\.wikipedia$/, '')}`, views: num(row.views) };
       });
       built.timings.top = Math.round(performance.now() - started);
       feedTop();
@@ -492,7 +495,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
         legend: false,
         title: `Top ${TOP_PAGES} pages`,
         subtitle: 'For the time window, project, access method and search chosen above',
-        margin: { left: window.innerWidth < 600 ? 150 : 270 },
+        margin: { left: window.innerWidth < 600 ? 175 : 270 },
       });
     } catch (error) {
       topBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));

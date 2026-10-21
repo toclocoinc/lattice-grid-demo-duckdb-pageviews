@@ -20,11 +20,20 @@ npm run verify          # headless Chrome, checks every figure against a second 
 Data: [Wikimedia pageview_complete](https://dumps.wikimedia.org/other/pageview_complete/readme.html), CC0, credit the
 Wikimedia Foundation. Details, row counts and sizes: [data/README.md](data/README.md).
 
-## Known grid issue: grouping is left out
+## How it stays fast
 
-Grouping by project and by access method is requested and the grid pushes the group query (`GROUP BY "project"`),
-but once a group is expanded its child rows never load ("Loading rows 1 to 27" stays), and the grid's plan reports
-`groupReason: the request carries no typed groupValues for its group path, and the string groupPath cannot be compared
-against a typed column`. Repro: `duckdbAdapter` + `createPushdownSource` over `read_parquet(...)`, columns
-`project` and `access` with `group: { enabled: true, index: 0 | 1 }`, `rowKey` an array of the four key columns,
-open the page. Reported rather than worked around, so the demo has no grouped view.
+The week is stored as one Parquet file per day (`pageviews-2026-09-DD.parquet`, same sort and row groups as before), and the
+page opens only the days inside the selected window. Two small tables answer what needs no page rows: `hourly-by-project`
+(the project list and the file's row count) and `top-pages` (the whole-week ranking, exact for any project and access
+choice; a search or a partial window ranks from the day files). Measured against `tools/serve.mjs` on a laptop, before
+(one 205 MB file) and after, in a fresh browser: first rows of the default day 13 s to 4.5–6 s (about 9.4 s to 3.7–5.5 s
+after DuckDB-Wasm loads); whole-week ranking 22.9 s to about 1 s; whole-week rows about 1 s in both; whole-week figures
+(views sum, trend) about 40 s to 3–13 s depending on what else is queued.
+
+## Grid notes (1.111.0)
+
+- Grouping by project, then access method, works: expanded groups load their children and `lastPlan()` carries typed
+  `groupValues`.
+- Header histograms come from the DuckDB adapter's built-in facets (no host provider). Project draws as its ten commonest
+  values plus Other. **The Hour histogram is not drawn** (`suppressed: no-provider` on a timestamp column over a pushdown
+  source) and the Views histogram is switched off: its quantiles sort the whole column (about 5 s a day, tens of seconds a week).

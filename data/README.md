@@ -1,10 +1,12 @@
 # Data
 
-The page reads one Parquet file that is **not in this repository**. `npm run build-data`
+The page reads Parquet files that are **not in this repository**. `npm run build-data`
 (`tools/build-parquet.mjs`, Node 22 and `@duckdb/node-api`, plus `bzip2` and `awk`) writes it
-from public sources only; the release box uploads it to
-`https://data.latticegrid.dev/duckdb/lattice-grid-demo-duckdb-pageviews/pageviews-2026-09-21.parquet`
-(the one constant in `src/config.js`). `?data=local` reads `data/pageviews-2026-09-21.parquet` through `tools/serve.mjs` instead.
+from public sources only; the release box uploads everything it writes under `data/` to
+`https://data.latticegrid.dev/duckdb/lattice-grid-demo-duckdb-pageviews/`
+(`DATA_BASE` in `src/config.js`): seven day files `pageviews-2026-09-21.parquet` … `-27.parquet`, `hourly-by-project-2026-09-21.parquet`
+(views and page counts per project, access and hour) and `top-pages-2026-09-21.parquet` (the 50 leading pages of each project, per access
+method and over all of them). `?data=local` reads `data/` through `tools/serve.mjs` instead.
 
 ## Source, licence, attribution
 
@@ -21,18 +23,20 @@ from public sources only; the release box uploads it to
    (`--min-daily`), and drops the dump's placeholder title `-`. A day is about 64 million lines,
    nearly all of them pages seen once or twice; without a threshold the week unpivots to well over a billion rows.
 3. Unpivots each line's hourly string (`A2B4...`, A = 00:00 UTC) into one row per page, access method and hour,
-   and writes one file: **zstd, row groups of 100,000 rows, sorted by project, hour**.
+   and writes one file per day: **zstd, row groups of 100,000 rows, sorted by project, hour**, then the two small tables.
 
 Columns: `project` (VARCHAR), `page_title` (VARCHAR), `access` (`desktop`, `mobile-web`, `mobile-app`),
 `hour` (TIMESTAMP, UTC), `views` (INTEGER).
 
 ## Measured (the build of 2026-10-21)
 
+Totals over the seven day files (identical to the former single file):
+
 | | |
 |---|---|
 | `SELECT count(*)` | **35,918,302** rows |
-| File size | **215,200,675 bytes (205.2 MB)** |
-| Row groups | 358 |
+| Day files | 28.2 to 32.6 MB each, 208.3 MB in all with the two small tables (hourly 0.4 MB, top pages 0.16 MB) |
+| Row groups | 49 to 55 per day |
 | First / last hour | 2026-09-21 00:00 / 2026-09-27 23:00 (UTC) |
 | Projects | 873 |
 | Distinct page titles | 255,803 |
