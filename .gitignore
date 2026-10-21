@@ -1,0 +1,7 @@
+node_modules/
+.cache/
+data/*.parquet
+data/*.zip
+data/facts.json
+data/build-report.txt
+.scratch-12015/

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A week of Wikipedia traffic, sliced in seconds: DuckDB and Lattice Grid in the browser</title>
+    <meta
+      name="description"
+      content="One week of Wikimedia pageviews, tens of millions of hourly rows in one Parquet file, filtered, ranked, grouped and checked for spikes live in the browser with DuckDB-Wasm and Lattice Grid. Data: Wikimedia Foundation, CC0."
+    />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./node_modules/@toclocoinc/lattice-grid/lattice-grid.min.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="app" class="app">
+      <header class="masthead">
+        <h1>A week of Wikipedia traffic, sliced in seconds</h1>
+        <p class="lede">
+          Wikimedia counts every page view by project, page, access method and hour. This page holds one week of
+          it, <span id="row-total">tens of millions of</span> hourly rows in a single file, and asks DuckDB
+          questions of it live in your browser: pick a time window, rank the pages, group by project or flag the
+          hours a page jumped above its own trailing 24-hour average. Every step is a new query.
+        </p>
+      </header>
+      <div id="loading" class="loading" role="status">
+        <p class="loading-message">Starting...</p>
+      </div>
+      <div id="dashboard" class="pending"></div>
+      <footer class="colophon">
+        Data: <a href="https://dumps.wikimedia.org/other/pageview_complete/readme.html">Wikimedia pageview_complete</a>,
+        user traffic, 21&ndash;27 September 2026, published by the Wikimedia Foundation under
+        <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0</a>. Pages seen fewer than 200 times a day are left out.
+      </footer>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

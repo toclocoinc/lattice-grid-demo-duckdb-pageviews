@@ -1,0 +1,179 @@
+/* The page around the grid. The grid and the charts style themselves from the
+   theme tokens in lattice-grid.min.css; this file only lays out what is mine. */
+
+:root {
+  --page-bg: #f4f6fa;
+  --page-fg: #1b2433;
+  --page-muted: #5a6577;
+  --card-bg: #ffffff;
+  --card-border: #d6dce8;
+  --accent: #2b59c3;
+  --accent-fg: #ffffff;
+  --chip-bg: #ffffff;
+  --code-bg: #eef1f7;
+  --error: #b3261e;
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  --page-bg: #11151d;
+  --page-fg: #e6eaf2;
+  --page-muted: #9aa5b8;
+  --card-bg: #1a202b;
+  --card-border: #2f3849;
+  --accent: #7ea2f5;
+  --accent-fg: #0d1320;
+  --chip-bg: #1a202b;
+  --code-bg: #141a24;
+  --error: #f2a6a0;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.app {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 24px 40px;
+}
+
+a { color: var(--accent); }
+
+.masthead {
+  position: relative;
+  padding-right: 130px;
+  margin-bottom: 20px;
+}
+.masthead h1 { margin: 0 0 8px; font-size: 28px; line-height: 1.2; }
+.lede { margin: 0; max-width: 900px; color: var(--page-muted); font-size: 16px; }
+
+.theme-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--chip-bg);
+  color: var(--page-fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.loading { padding: 40px 0; color: var(--page-muted); }
+.loading.failed .loading-message { color: var(--error); max-width: 800px; }
+.loading-message { margin: 0; }
+
+#dashboard.pending { visibility: hidden; height: 0; overflow: hidden; }
+
+.controls, .tiles, .grid-section, .plan, .chart-box {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+}
+
+.controls { padding: 14px 16px 10px; margin-bottom: 14px; }
+.controls-row { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: flex-end; margin-bottom: 10px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-label { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: var(--page-muted); text-transform: uppercase; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  padding: 5px 11px;
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--page-fg);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.chip:focus-visible, .theme-toggle:focus-visible, select:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+select, input[type='datetime-local'], input[type='search'] {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--chip-bg);
+  color: var(--page-fg);
+  font: inherit;
+  font-size: 13px;
+}
+select { min-width: 190px; }
+input.search { width: 260px; }
+.range { display: flex; align-items: center; gap: 8px; }
+.range input { width: 200px; }
+.range-to { color: var(--page-muted); font-size: 13px; }
+
+.mode-note { margin: 0; flex: 1 1 320px; align-self: center; color: var(--page-muted); font-size: 13px; }
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.tile { padding: 12px 16px; border-right: 1px solid var(--card-border); min-width: 0; }
+.tile:last-child { border-right: 0; }
+.tile-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; color: var(--page-muted); }
+.tile-value { font-size: 26px; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; }
+.tile-hint { font-size: 12px; color: var(--page-muted); }
+
+.charts { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
+.chart-box { height: 340px; padding: 8px; overflow: hidden; min-width: 0; }
+.chart-error { margin: 12px; color: var(--error); }
+
+.grid-section { padding: 0; margin-bottom: 14px; overflow: hidden; }
+.grid-host { height: 600px; }
+
+.plan { padding: 10px 16px; }
+.plan-summary { cursor: pointer; font-weight: 600; }
+.plan-note { margin: 8px 0; color: var(--page-muted); font-size: 13px; }
+.plan-sql {
+  margin: 0;
+  padding: 12px;
+  max-height: 340px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--code-bg);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.colophon { margin-top: 18px; color: var(--page-muted); font-size: 13px; max-width: 900px; }
+
+@media (max-width: 1000px) {
+  .charts { grid-template-columns: minmax(0, 1fr); }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile:nth-child(2) { border-right: 0; }
+  .tile:nth-child(-n + 2) { border-bottom: 1px solid var(--card-border); }
+}
+
+@media (max-width: 600px) {
+  .app { padding: 16px 12px 32px; }
+  .masthead { padding-right: 0; padding-top: 40px; }
+  .masthead h1 { font-size: 23px; }
+  .range { flex-wrap: wrap; }
+  .range input, select, input.search { width: 100%; min-width: 0; }
+  .field { width: 100%; }
+  .chart-box { height: 300px; }
+  .grid-host { height: 520px; }
+  .tile-value { font-size: 21px; }
+}
+
+.chart-wait { margin: 16px; color: var(--page-muted); font-size: 14px; }
