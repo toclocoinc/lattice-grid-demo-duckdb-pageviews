@@ -471,7 +471,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       feedTop();
       renderPlan();
     } catch (error) {
-      console.error('[pageviews demo] top pages', error);
+      console.error('[pageviews demo] top pages', error, sql, params);
       built.error = String(error?.message ?? error);
     }
   }
