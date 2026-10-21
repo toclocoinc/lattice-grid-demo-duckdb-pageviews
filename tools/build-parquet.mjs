@@ -66,7 +66,6 @@ const days = Array.from({ length: 7 }, (_, i) => {
   d.setUTCDate(d.getUTCDate() + i);
   return d.toISOString().slice(0, 10);
 });
-const outFile = join(root, 'data', `pageviews-${start}.parquet`);
 
 const exists = async (path) => { try { await access(path); return true; } catch { return false; } };
 const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
@@ -124,30 +123,70 @@ const db = await DuckDBInstance.create(':memory:');
 const conn = await db.connect();
 await conn.run("SET preserve_insertion_order = false");
 
-const list = filtered.map((f) => `'${f.replaceAll("'", "''")}'`).join(', ');
-const out = outFile.replaceAll("'", "''");
+const q = (path) => path.replaceAll("'", "''");
+const dayFiles = days.map((day) => join(root, 'data', `pageviews-${day}.parquet`));
 
-console.log('Unpivoting the hours and writing the Parquet file...');
+/* One file per day, each sorted by project then hour with row groups of 100,000
+   rows, so the page opens only the days in the selected window and, inside a
+   day, skips row groups by their min/max statistics. */
+for (const [i, day] of days.entries()) {
+  console.log(`${day}: unpivoting the hours and writing ${dayFiles[i]}`);
+  await conn.run(`
+    COPY (
+      SELECT
+        project::VARCHAR                                        AS project,
+        page_title::VARCHAR                                     AS page_title,
+        access::VARCHAR                                         AS access,
+        (day::DATE::TIMESTAMP
+          + to_hours((ascii(substr(tok, 1, 1)) - 65)::BIGINT))  AS hour,
+        substr(tok, 2)::INTEGER                                 AS views
+      FROM (
+        SELECT project, page_title, access, day,
+               unnest(regexp_extract_all(hourly, '[A-X][0-9]+')) AS tok
+        FROM read_csv('${q(filtered[i])}', delim = ' ', header = false, quote = '', escape = '',
+                      columns = { 'project': 'VARCHAR', 'page_title': 'VARCHAR', 'access': 'VARCHAR',
+                                  'total': 'BIGINT', 'hourly': 'VARCHAR', 'day': 'VARCHAR' },
+                      strict_mode = false)
+      )
+      WHERE page_title <> '-'
+      ORDER BY project, hour, page_title, access
+    ) TO '${q(dayFiles[i])}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+  `);
+}
+
+/* A small pre-aggregated table for the trend chart and the whole-week figures:
+   views and row counts per project, access method and hour. */
+const hourlyFile = join(root, 'data', `hourly-by-project-${start}.parquet`);
+console.log(`Writing ${hourlyFile}`);
+const dayList = dayFiles.map((f) => `'${q(f)}'`).join(', ');
 await conn.run(`
   COPY (
-    SELECT
-      project::VARCHAR                                        AS project,
-      page_title::VARCHAR                                     AS page_title,
-      access::VARCHAR                                         AS access,
-      (day::DATE::TIMESTAMP
-        + to_hours((ascii(substr(tok, 1, 1)) - 65)::BIGINT))  AS hour,
-      substr(tok, 2)::INTEGER                                 AS views
-    FROM (
-      SELECT project, page_title, access, day,
-             unnest(regexp_extract_all(hourly, '[A-X][0-9]+')) AS tok
-      FROM read_csv([${list}], delim = ' ', header = false, quote = '', escape = '',
-                    columns = { 'project': 'VARCHAR', 'page_title': 'VARCHAR', 'access': 'VARCHAR',
-                                'total': 'BIGINT', 'hourly': 'VARCHAR', 'day': 'VARCHAR' },
-                    strict_mode = false)
-    )
-    WHERE page_title <> '-'
-    ORDER BY project, hour, page_title, access
-  ) TO '${out}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+    SELECT project, access, hour, sum(views)::BIGINT AS views, count(*)::INTEGER AS pages
+    FROM read_parquet([${dayList}])
+    GROUP BY project, access, hour
+    ORDER BY project, hour, access
+  ) TO '${q(hourlyFile)}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+`);
+
+/* The whole week's most-viewed pages, for the whole-week ranking: the 50 top
+   pages of each project, in each access method and over all of them (access is
+   '' for all). The ranking for any project and access choice is exact from this,
+   because the top 12 of a union is inside the union of the top 12s, and it
+   spares the page a GROUP BY over every row of the week. */
+const topFile = join(root, 'data', `top-pages-${start}.parquet`);
+console.log(`Writing ${topFile}`);
+await conn.run(`
+  COPY (
+    SELECT project, page_title, coalesce(access, '') AS access, views FROM (
+      SELECT project, page_title, access, views,
+             row_number() OVER (PARTITION BY project, access ORDER BY views DESC, page_title) AS rank
+      FROM (
+        SELECT project, page_title, access, sum(views)::BIGINT AS views
+        FROM read_parquet([${dayList}]) GROUP BY GROUPING SETS ((project, page_title, access), (project, page_title))
+      ) AS sums (project, page_title, access, views)
+    ) WHERE rank <= 50
+    ORDER BY project, access, views DESC
+  ) TO '${q(topFile)}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
 `);
 
 /* ------------------------------------------------------------------ report */
@@ -156,15 +195,23 @@ const facts = (await conn.runAndReadAll(`
   SELECT count(*) AS rows, min(hour) AS first_hour, max(hour) AS last_hour,
          count(DISTINCT project) AS projects, count(DISTINCT page_title) AS titles,
          sum(views)::HUGEINT AS views
-  FROM read_parquet('${out}')
+  FROM read_parquet([${dayList}])
 `)).getRowObjects();
-const groups = (await conn.runAndReadAll(`SELECT count(DISTINCT row_group_id) AS n FROM parquet_metadata('${out}')`)).getRowObjects()[0].n;
-const size = (await stat(outFile)).size;
+let report = `${new Date().toISOString()}\n`;
+let totalBytes = 0;
+for (const f of [...dayFiles, hourlyFile, topFile]) {
+  const groups = (await conn.runAndReadAll(`SELECT count(DISTINCT row_group_id) AS n FROM parquet_metadata('${q(f)}')`)).getRowObjects()[0].n;
+  const rows = (await conn.runAndReadAll(`SELECT count(*) AS n FROM read_parquet('${q(f)}')`)).getRowObjects()[0].n;
+  const size = (await stat(f)).size;
+  totalBytes += size;
+  const line = `${f.split('/').pop()}: ${mb(size)} (${size} bytes), ${groups} row groups, ${rows} rows`;
+  console.log(line);
+  report += `${line}\n`;
+}
 const show = (v) => (typeof v === 'bigint' ? v.toString() : String(v));
-console.log(`\nWrote ${outFile}`);
-console.log(`  ${mb(size)} (${size} bytes), ${groups} row groups`);
-for (const [k, v] of Object.entries(facts[0])) console.log(`  ${k}: ${show(v)}`);
-await writeFile(join(root, 'data', 'build-report.txt'), `${new Date().toISOString()}\nfile: ${outFile}\nbytes: ${size}\nrow_groups: ${groups}\n${Object.entries(facts[0]).map(([k, v]) => `${k}: ${show(v)}`).join('\n')}\n`);
+console.log(`total ${mb(totalBytes)}`);
+for (const [k, v] of Object.entries(facts[0])) { console.log(`  ${k}: ${show(v)}`); report += `${k}: ${show(v)}\n`; }
+await writeFile(join(root, 'data', 'build-report.txt'), report);
 
 if (!keep) {
   for (const f of filtered) await rm(f, { force: true });

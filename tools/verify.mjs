@@ -7,7 +7,7 @@
  * so an error in the adapter cannot hide by being made twice. Every
  * interaction is a real pointer or keyboard event (`Input.dispatch*`).
  *
- *   npm run build-data     # once: writes data/pageviews-<week>.parquet
+ *   npm run build-data     # once: writes data/pageviews-<day>.parquet for each day
  *   npm run verify
  *
  * `--shots <dir>` also saves screenshots at 1440px and 390px, light and dark.
@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './browser.mjs';
-import { LOCAL_DATA_URL } from '../src/config.js';
+import { LOCAL_DATA_BASE, dayFileName } from '../src/config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -46,8 +46,7 @@ const ts = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
 const { DuckDBInstance } = await import('@duckdb/node-api');
 const db = await DuckDBInstance.create(':memory:');
 const conn = await db.connect();
-const FILE = join(root, LOCAL_DATA_URL).replaceAll("'", "''");
-const P = `read_parquet('${FILE}')`;
+const P = `read_parquet([${Array.from({ length: 7 }, (_, i) => `'${join(root, LOCAL_DATA_BASE, dayFileName(i)).replaceAll("'", "''")}'`).join(', ')}])`;
 const rows = async (sql) => (await conn.runAndReadAll(sql)).getRowObjects();
 const one = async (sql) => (await rows(sql))[0];
 const n = (v) => (typeof v === 'bigint' ? Number(v) : Number(v));

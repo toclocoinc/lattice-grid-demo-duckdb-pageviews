@@ -2,8 +2,8 @@
  * What the data is, and how the grid should read it.
  *
  * One week of the Wikimedia `pageview_complete` user-traffic files, converted
- * to a single Parquet file by tools/build-parquet.mjs: one row per page, access
- * method and hour, sorted by project and hour. Every column here exists in that
+ * to Parquet by tools/build-parquet.mjs: one file per day, one row per page,
+ * access method and hour, each sorted by project and hour. Every column here exists in that
  * file; the two window-function columns exist only in the SQL below.
  */
 
@@ -43,13 +43,12 @@ export const DEFAULT_WINDOW = WINDOWS.find((w) => w.id === 'd2');
 /**
  * The views of the grid. Each is one grid over the same file.
  *
- * There is no grouped view. Grouping by project and by access method is pushed
- * to DuckDB by the grid, but over this file the expanded group's child rows
- * never load ("Loading rows 1 to 27" for good), so it is left out rather than
- * worked around; see the README.
+ * `grouped` is the rows view with the grid grouped by project, then access
+ * method; the grid pushes the group queries to DuckDB.
  */
 export const MODES = [
   { id: 'rows', label: 'Rows' },
+  { id: 'grouped', label: 'Grouped' },
   { id: 'spikes', label: 'Spike detection' },
 ];
 
@@ -64,8 +63,15 @@ export const TOP_PAGES = 12;
 export const BASE_FIELDS = ['project', 'page_title', 'access', 'hour', 'views'];
 export const SPIKE_FIELDS = [...BASE_FIELDS, 'avg24', 'spike'];
 
-/** The whole file as a FROM expression. */
-export const fromFile = (url) => `read_parquet('${url.replaceAll("'", "''")}')`;
+/** The days a window touches, as indexes into the week: a window ending exactly at midnight does not touch the next day. */
+export function daysIn(fromMs, toMs) {
+  const first = Math.max(0, Math.floor((fromMs - WEEK_START_MS) / DAY));
+  const last = Math.min(6, Math.floor((toMs - 1 - WEEK_START_MS) / DAY));
+  return Array.from({ length: Math.max(0, last - first + 1) }, (_, i) => first + i);
+}
+
+/** A list of day files as a FROM expression. */
+export const fromFiles = (urls) => `read_parquet([${urls.map((u) => `'${u.replaceAll("'", "''")}'`).join(', ')}])`;
 
 /**
  * One project's hours with the trailing-24-hour comparison alongside.
@@ -82,14 +88,14 @@ export const fromFile = (url) => `read_parquet('${url.replaceAll("'", "''")}')`;
  */
 const stamp = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
-export function spikeFrom(url, project, fromMs = WEEK_START_MS, toMs = WEEK_END_MS) {
+export function spikeFrom(urls, project, fromMs = WEEK_START_MS, toMs = WEEK_END_MS) {
   const literal = String(project).replaceAll("'", "''");
   const firstFull = stamp(WEEK_START_MS + DAY);
   return `(SELECT project, page_title, access, hour, views,
     sum(views) OVER w24 / 24.0 AS avg24,
     CASE WHEN hour >= TIMESTAMP '${firstFull}'
          THEN views / nullif(sum(views) OVER w24 / 24.0, 0) END AS spike
-  FROM ${fromFile(url)}
+  FROM ${fromFiles(urls)}
   WHERE project = '${literal}'
     AND hour >= TIMESTAMP '${stamp(fromMs - DAY)}' AND hour < TIMESTAMP '${stamp(toMs)}'
   WINDOW w24 AS (PARTITION BY page_title, access ORDER BY hour
@@ -106,17 +112,22 @@ const noGroup = { allowGroup: false };
  */
 export function columns({ mode }) {
   const spikes = mode === 'spikes';
+  const grouped = mode === 'grouped';
+  /* Only the rows views group; the window-function view is one project at a time. */
+  const by = (index) => (grouped ? { group: { enabled: true, index } } : spikes ? noGroup : {});
   return [
-    { field: 'project', title: 'Project', filter: { type: 'set' }, layout: { width: 170 }, ...noGroup },
+    { field: 'project', title: 'Project', filter: { type: 'set' }, layout: { width: 170 }, ...by(0) },
     { field: 'page_title', title: 'Page', filter: { type: 'text' }, layout: { width: 300 }, facet: false, ...noGroup },
-    { field: 'access', title: 'Access', filter: { type: 'set' }, layout: { width: 130 }, ...noGroup },
+    { field: 'access', title: 'Access', filter: { type: 'set' }, layout: { width: 130 }, ...by(1) },
     {
       field: 'hour', title: 'Hour (UTC)', type: 'datetime', filter: { type: 'date' },
       layout: { width: 190 }, ...noGroup,
     },
     {
       field: 'views', title: 'Views', type: 'number', filter: { type: 'number' }, total: 'sum',
-      format: { decimals: 0 }, layout: { width: 130 }, ...noGroup,
+      format: { decimals: 0 }, layout: { width: 130 },
+      /* Its histogram needs quantiles of every matching row, a full sort of the column: seconds on a day, tens on a week. */
+      facet: false, ...noGroup,
     },
     ...(spikes ? [
       {

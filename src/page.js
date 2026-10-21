@@ -8,17 +8,22 @@
  *                    one `GROUP BY hour` over everything the grid's filter keeps.
  *   the figures      `source.aggregate()` over the same filter.
  *   top pages        one ranking query over the scope the controls describe.
- *   the histograms   the grid's own header strips, fed by `source.aggregate()`.
+ *   the histograms   the grid's own header strips; the DuckDB adapter answers
+ *                    their requests itself, as bound SQL.
+ *   the files        one Parquet file per day: a query opens only the days in
+ *                    the selected window. A small hourly table answers the
+ *                    questions that do not need a page (the project list, the
+ *                    whole file's row count).
  *
  * Nothing is reduced from the rows on screen: the grid holds one window of a
  * file of tens of millions of rows, and a figure computed from it would be a
  * figure about the window.
  */
 
-import { dataUrl } from './config.js';
+import { dataUrls } from './config.js';
 import {
   ACCESS, WINDOWS, DEFAULT_WINDOW, MODES, WEEK_START_MS, WEEK_END_MS, SPIKE_DEFAULT_PROJECT, SPIKE_MIN_VIEWS, TOP_PAGES,
-  BASE_FIELDS, SPIKE_FIELDS, fromFile, spikeFrom, columns, fmt, num,
+  BASE_FIELDS, SPIKE_FIELDS, fromFiles, daysIn, spikeFrom, columns, fmt, num,
 } from './data.js';
 
 const HOUR = 3600 * 1000;
@@ -59,7 +64,9 @@ function chips(label, options, onPick) {
 const isoHour = (ms) => new Date(ms).toISOString().slice(0, 16);
 
 export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVersion }) {
-  const FILE = dataUrl();
+  const URLS = dataUrls();
+  /** The day files the selected window touches. */
+  const windowFiles = () => daysIn(state.from, state.to).map((i) => URLS.days[i]);
 
   const built = {
     isReady: false,
@@ -82,7 +89,8 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     timings: { page: null, scope: null, top: null },
     projects: [],
     duckdbVersion,
-    file: FILE,
+    file: URLS.days[0],
+    files: URLS.days,
   };
   const state = built.state;
 
@@ -229,6 +237,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     projectSelect.value = state.project;
     modeNote.textContent = {
       rows: 'Every hourly row in the selection: sort any column, filter from its header, or click a bar in a histogram.',
+      grouped: 'The same rows grouped by project, then access method. Open a group to load its rows; every level is a GROUP BY in DuckDB.',
       spikes: `One project at a time. A window function compares each hour with the 24 before it; hours under ${SPIKE_MIN_VIEWS} views are left out.`,
     }[state.mode];
   }
@@ -254,8 +263,8 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
 
   function applyScope() {
     paintControls();
-    if (state.mode === 'spikes') {
-      /* The window function reads the selected hours and the 24 before them, so a new window is a new source. */
+    if (state.mode === 'spikes' || filesKey() !== mountedFiles) {
+      /* A new set of day files is a new source. The window function reads the selected hours and the 24 before them. */
       mountGrid();
     } else {
       built.grid?.filters.set(scopeTree());
@@ -266,60 +275,17 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
 
   /* ---------------------------------------------------------- the grid */
 
-  /** Resolves once the first figures and charts are in, so the histograms queue behind them. */
-  let openFacets;
-  const facetGate = new Promise((ok) => { openFacets = ok; });
-
   const request = (filters, groupBy) => ({ filters, sort: [], range: null, groupBy, quick: '' });
-  const realGroups = (groups) => (groups ?? []).filter((g) => !g.grouping?.[0]);
 
-  /**
-   * The header histograms. The grid asks for one answer per column per
-   * filter change; each is one `GROUP BY` through the same source, with the
-   * column's own filter already removed by the grid. Bar edges are fixed from
-   * the first answer so the bars do not move under the pointer.
-   */
-  function facetProvider(getSource) {
-    const first = new Map();
-    return async (req) => {
-      await facetGate;
-      const source = getSource();
-      const agg = await source.aggregate(request(req.filters, [req.colId]), [{ id: 'n', col: 'views', fn: 'count' }]);
-      const groups = realGroups(agg.groups).map((g) => ({ key: g.keys[0], n: num(g.values.n) }));
-      let out;
-      if (req.colId === 'project' || req.colId === 'access') {
-        const edges = first.get(req.colId) ?? groups.slice().sort((a, b) => b.n - a.n).slice(0, req.colId === 'project' ? 10 : 3).map((g) => g.key);
-        first.set(req.colId, edges);
-        const counts = edges.map((key) => groups.find((g) => g.key === key)?.n ?? 0);
-        out = { bounds: { kind: 'category', buckets: edges.map((value) => ({ value })) }, counts, kind: 'category' };
-      } else if (req.colId === 'hour') {
-        const buckets = Array.from({ length: 7 }, (_, i) => ({ from: WEEK_START_MS + i * 24 * HOUR, to: WEEK_START_MS + (i + 1) * 24 * HOUR }));
-        const counts = buckets.map(() => 0);
-        for (const g of groups) {
-          const i = Math.floor((num(g.key) - WEEK_START_MS) / (24 * HOUR));
-          if (i >= 0 && i < 7) counts[i] += g.n;
-        }
-        out = { bounds: { kind: 'date', granularity: 'day', min: WEEK_START_MS, max: WEEK_END_MS, buckets }, counts, kind: 'date' };
-      } else {
-        /* views: powers of two, because the distribution spans six orders of magnitude. */
-        const buckets = Array.from({ length: 23 }, (_, i) => ({ from: 2 ** i, to: 2 ** (i + 1) }));
-        const counts = buckets.map(() => 0);
-        for (const g of groups) {
-          const v = num(g.key);
-          if (v >= 1) counts[Math.min(22, Math.floor(Math.log2(v)))] += g.n;
-        }
-        out = { bounds: { kind: 'numeric', strategy: 'log', min: 1, max: 2 ** 23, buckets }, counts, kind: 'numeric' };
-      }
-      if (!first.has(`${req.colId}:all`)) { first.set(`${req.colId}:all`, true); out.unfiltered = out.counts; }
-      return out;
-    };
-  }
+  /** Which day files the grid was built over; a window that needs different ones needs a new source. */
+  const filesKey = () => (state.mode === 'spikes' ? `spikes:${state.from}:${state.to}` : windowFiles().join());
+  let mountedFiles = null;
 
   function makeSource(mode, project) {
     const spikes = mode === 'spikes';
     const adapter = LG.duckdbAdapter({
       connection,
-      from: spikes ? spikeFrom(FILE, project, state.from, state.to) : fromFile(FILE),
+      from: spikes ? spikeFrom(URLS.days, project, state.from, state.to) : fromFiles(windowFiles()),
       fields: spikes ? SPIKE_FIELDS : BASE_FIELDS,
       quickColumns: ['page_title'],
     });
@@ -332,17 +298,45 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     return { adapter, source };
   }
 
+  /**
+   * The trend chart is a viewer of the grid: its filter, its source. It is drawn
+   * once the first window of rows is in, so its GROUP BY does not queue ahead of them.
+   */
+  let chartDue = null;
+  function mountChart(grid, sequence) {
+    if (built.chart || sequence !== mountSequence) return;
+    try {
+      built.chart = createChart({
+        grid,
+        container: trendBox,
+        type: 'line',
+        x: 'hour',
+        y: { col: 'views', fn: 'sum' },
+        aggregate: 'engine',
+        legend: false,
+        title: 'Views per hour',
+        subtitle: 'Summed by DuckDB over every row the grid is showing a window of',
+        axis: { y: 'Views' },
+      });
+    } catch (error) {
+      trendBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));
+      console.error('[pageviews demo] chart', error);
+    }
+  }
+
   let mountSequence = 0;
 
   function mountGrid() {
     const sequence = ++mountSequence;
     built.chart?.destroy?.();
     built.chart = null;
+    chartDue = null;
     built.grid?.destroy?.();
     gridHost.textContent = '';
     trendBox.textContent = '';
     built.matchCount = null;
     built.mode = state.mode;
+    mountedFiles = filesKey();
 
     const { adapter, source } = makeSource(state.mode, state.project);
     built.adapter = adapter;
@@ -355,9 +349,10 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       timeZone: 'UTC',
       toolPanel: { side: 'right', panels: ['filters', 'columns'] },
       showTotalInHeader: true,
+      groupDefaultExpanded: false,
       /* Each histogram is a query; over the window-function source that is the window again, so that view goes without. */
-      facets: state.mode === 'spikes' ? false : { enabled: true, collapsed: false, height: 40, provider: facetProvider(() => built.source) },
-          });
+      facets: state.mode === 'spikes' ? false : { enabled: true, collapsed: false, height: 40 },
+    });
     built.grid = grid;
 
     const tree = scopeTree();
@@ -387,27 +382,11 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       }
       paintTiles();
       renderPlan();
+      if (!query.groupBy?.length && chartDue) { const due = chartDue; chartDue = null; due(); }
       return result;
     };
 
-    /* The trend chart is a viewer of this grid: its filter, its source. */
-    try {
-      built.chart = createChart({
-        grid,
-        container: trendBox,
-        type: 'line',
-        x: 'hour',
-        y: { col: 'views', fn: 'sum' },
-        aggregate: 'engine',
-        legend: false,
-        title: 'Views per hour',
-        subtitle: 'Summed by DuckDB over every row the grid is showing a window of',
-        axis: { y: 'Views' },
-      });
-    } catch (error) {
-      trendBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));
-      console.error('[pageviews demo] chart', error);
-    }
+    chartDue = () => mountChart(grid, sequence);
     return grid;
   }
 
@@ -436,11 +415,9 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       built.timings.scope = Math.round(performance.now() - started);
       paintTiles();
       renderPlan();
-      openFacets();
     } catch (error) {
       console.error('[pageviews demo] aggregate', error);
       built.error = String(error?.message ?? error);
-      openFacets();
     }
   }
 
@@ -456,16 +433,25 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     const where = [];
     const params = [];
     const full = state.from <= WEEK_START_MS && state.to >= WEEK_END_MS;
-    if (!full) {
-      where.push('hour >= CAST(? AS TIMESTAMP) AND hour < CAST(? AS TIMESTAMP)');
-      params.push(new Date(state.from).toISOString().slice(0, 19).replace('T', ' '), new Date(state.to).toISOString().slice(0, 19).replace('T', ' '));
-    }
-    if (state.project) { where.push('project = ?'); params.push(state.project); }
-    if (state.access) { where.push('access = ?'); params.push(state.access); }
-    if (state.quick) { where.push('page_title ILIKE ?'); params.push(`%${state.quick}%`); }
     const keys = state.project ? 'page_title' : 'project, page_title';
-    const sql = `SELECT ${keys}, sum(views)::BIGINT AS views FROM ${fromFile(FILE)}`
-      + `${where.length ? ` WHERE ${where.join(' AND ')}` : ''} GROUP BY ${keys} ORDER BY views DESC, ${keys} LIMIT ${TOP_PAGES}`;
+    let sql;
+    if (full && !state.quick) {
+      /* The whole week, no search: the answer is in the top-pages table, which has the leaders of every project and access method. */
+      where.push('access = ?');
+      params.push(state.access);
+      if (state.project) { where.push('project = ?'); params.push(state.project); }
+      sql = `SELECT ${keys}, views FROM read_parquet('${URLS.top}') WHERE ${where.join(' AND ')} ORDER BY views DESC, ${keys} LIMIT ${TOP_PAGES}`;
+    } else {
+      if (!full) {
+        where.push('hour >= CAST(? AS TIMESTAMP) AND hour < CAST(? AS TIMESTAMP)');
+        params.push(new Date(state.from).toISOString().slice(0, 19).replace('T', ' '), new Date(state.to).toISOString().slice(0, 19).replace('T', ' '));
+      }
+      if (state.project) { where.push('project = ?'); params.push(state.project); }
+      if (state.access) { where.push('access = ?'); params.push(state.access); }
+      if (state.quick) { where.push('page_title ILIKE ?'); params.push(`%${state.quick}%`); }
+      sql = `SELECT ${keys}, sum(views)::BIGINT AS views FROM ${fromFiles(windowFiles())}`
+        + `${where.length ? ` WHERE ${where.join(' AND ')}` : ''} GROUP BY ${keys} ORDER BY views DESC, ${keys} LIMIT ${TOP_PAGES}`;
+    }
     try {
       const statement = await connection.prepare(sql);
       const result = await statement.query(...params);
@@ -560,7 +546,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
 
   async function loadProjects() {
     const result = await connection.query(
-      `SELECT project FROM ${fromFile(FILE)} GROUP BY project ORDER BY sum(views) DESC LIMIT 15`,
+      `SELECT project FROM read_parquet('${URLS.hourly}') GROUP BY project ORDER BY sum(views) DESC LIMIT 15`,
     );
     built.projects = result.toArray().map((r) => String(r.toJSON().project));
     const current = projectSelect.value;
@@ -581,7 +567,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     }
     if (built.matchCount == null) throw new Error('the first window of rows never arrived');
     const total = document.querySelector('#row-total');
-    built.totalRows = num((await connection.query(`SELECT count(*) AS n FROM ${fromFile(FILE)}`)).toArray()[0].toJSON().n);
+    built.totalRows = num((await connection.query(`SELECT sum(pages) AS n FROM read_parquet('${URLS.hourly}')`)).toArray()[0].toJSON().n);
     if (total) total.textContent = `${fmt.compact(built.totalRows)} `;
     built.isReady = true;
     built.settled = Promise.all([refreshTop(), loadProjects()]).then(() => { built.isSettled = true; });
