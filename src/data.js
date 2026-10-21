@@ -116,7 +116,11 @@ export function columns({ mode }) {
   /* Only the rows views group; the window-function view is one project at a time. */
   const by = (index) => (grouped ? { group: { enabled: true, index } } : spikes ? noGroup : {});
   return [
-    { field: 'project', title: 'Project', filter: { type: 'set' }, layout: { width: 170 }, ...by(0) },
+    {
+      field: 'project', title: 'Project', filter: { type: 'set' }, layout: { width: 170 }, ...by(0),
+      /* Hundreds of projects: draw the ten commonest and gather the rest into one bar. */
+      facet: { cardinalityLimit: 10, aboveLimit: 'topN' },
+    },
     { field: 'page_title', title: 'Page', filter: { type: 'text' }, layout: { width: 300 }, facet: false, ...noGroup },
     { field: 'access', title: 'Access', filter: { type: 'set' }, layout: { width: 130 }, ...by(1) },
     {

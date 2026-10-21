@@ -409,9 +409,11 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     const turn = ++scopeSequence;
     const started = performance.now();
     try {
-      const result = await built.source.aggregate(request(filters, []), [{ id: 'views', col: 'views', fn: 'sum' }]);
+      const result = await built.source.aggregate(request(filters, []), [{ id: 'views', col: 'views', fn: 'sum' }, { id: 'rows', col: 'views', fn: 'count' }]);
       if (turn !== scopeSequence || sequence !== mountSequence) return;
       built.scope.views = num(result.values?.views);
+      /* A grouped grid is asked for its groups, not a flat count, so the count comes from here. */
+      if (state.mode === 'grouped') built.matchCount = num(result.values?.rows);
       built.timings.scope = Math.round(performance.now() - started);
       paintTiles();
       renderPlan();

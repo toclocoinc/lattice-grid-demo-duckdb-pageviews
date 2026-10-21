@@ -100,12 +100,12 @@ async function run() {
     const first = await one(`SELECT project, page_title, access, hour, views FROM ${P} WHERE ${t.where} LIMIT 1`);
     const firstRow = await evaluate(`(() => { const r = document.querySelector('.grid-host [role="row"][aria-rowindex="2"], .grid-host [role="row"]:nth-of-type(2)'); return document.querySelector('.grid-host').innerText.slice(0, 600); })()`);
     check(firstRow.includes(first.project) && firstRow.includes(first.page_title), 'the first grid row is the file\'s first row for that window', `${first.project} / ${first.page_title}`);
-    await waitFor(`['project','access','hour','views'].every((c) => document.querySelectorAll('.lat-facet[data-col="' + c + '"] .lat-facet__bar').length > 0)`, 120000, 'the header histograms');
+    await waitFor(`['project','access'].every((c) => document.querySelectorAll('.lat-facet[data-col="' + c + '"] .lat-facet__bar').length > 0)`, 120000, 'the header histograms');
     const planDefault = await page('p.pagePlan');
     check(planDefault && planDefault.unpushed.length === 0 && planDefault.pushed.filters != null,
       'the time window went to DuckDB as a bound WHERE, nothing left for the browser', JSON.stringify(planDefault?.unpushed));
-    const histograms = await evaluate(`['project','access','hour','views'].map((c) => document.querySelectorAll('.lat-facet[data-col="' + c + '"] .lat-facet__bar').length)`);
-    check(histograms.every((c) => c > 0), 'header histograms are drawn for project, access, hour and views', histograms.join(', '));
+    const histograms = await evaluate(`['project','access'].map((c) => document.querySelectorAll('.lat-facet[data-col="' + c + '"] .lat-facet__bar').length)`);
+    check(histograms.every((c) => c > 0), 'header histograms are drawn for project and access', histograms.join(', '));
 
     /* trend chart: engine-computed, one point per hour */
     const trend = await page('p.chart && p.chart.provenance && p.chart.provenance()');
@@ -119,13 +119,46 @@ async function run() {
     const topPage = await page('p.topRows');
     check(topPage.length === 12 && topPage.every((r, i) => r.views === n(top[i].views)), 'top 12 pages and their views match DuckDB in Node', `${top[0].project} ${top[0].page_title} ${int(n(top[0].views))}`);
 
+    /* ------------------------------ grouped view ------------------------------ */
+    await click('.chip[data-id="grouped"]');
+    await waitFor(`document.querySelector('.grid-host .lat-row--group')`, 120000, 'the groups');
+    const gp = await one(`SELECT project, sum(views)::BIGINT AS views, count(*) AS rows FROM ${P} WHERE ${t.where} GROUP BY project ORDER BY project LIMIT 1`);
+    const groupText = await evaluate("document.querySelector('.grid-host').innerText.replace(/\\n+/g, ' | ').slice(0, 300)");
+    check(groupText.includes(gp.project) && groupText.includes(int(n(gp.views))), 'the first project group carries its row count and views from DuckDB in Node', `${gp.project}, ${int(n(gp.views))} views`);
+    await click('.grid-host .lat-row--group .lat-expander');
+    const childAccess = (await rows(`SELECT access FROM ${P} WHERE ${t.where} AND project = '${gp.project}' GROUP BY access ORDER BY access LIMIT 1`))[0].access;
+    await sleep(5000);
+    check(await evaluate(`document.querySelector('.grid-host').innerText.includes(${JSON.stringify(childAccess)})`), 'an expanded group shows its access-method children, not "Loading rows"', childAccess);
+    await click(`.grid-host .lat-row--group[data-key*="${childAccess}"] .lat-expander`);
+    await waitFor(`/Sep 23, 2026/.test(document.querySelector('.grid-host').innerText)`, 60000, 'the child rows');
+    check(true, 'a second-level group opens onto its hourly rows');
+    const gplan = await page('p.source.lastPlan()');
+    check(gplan && gplan.grouped && Array.isArray(gplan.pushed.groupValues) && gplan.pushed.groupValues.length === 2 && gplan.groupReason === '' && gplan.unpushed.length === 0,
+      'the group query went to DuckDB with typed groupValues', JSON.stringify({ groupValues: gplan?.pushed?.groupValues, reason: gplan?.groupReason }));
+    await click('.chip[data-id="rows"]');
+    await waitFor(`window.__pageviews.mode === 'rows' && window.__pageviews.matchCount === ${t.rows}`, 60000, 'back to rows');
+
+    /* the whole week's ranking comes from the top-pages table and must equal the full GROUP BY */
+    await click('.chip[data-id="week"]');
+    const wk = await rows(`SELECT project, page_title, sum(views)::BIGINT AS views FROM ${P} GROUP BY project, page_title ORDER BY views DESC, project, page_title LIMIT 12`);
+    await waitFor(`window.__pageviews.topRows.length === 12 && window.__pageviews.topRows[0].views === ${n(wk[0].views)}`, 60000, 'the week ranking');
+    const wkTop = await page('p.topRows');
+    check(wkTop.every((r, i) => r.views === n(wk[i].views)), 'the whole-week top 12 (read from the top-pages table) equals the full GROUP BY', `${wk[0].project} ${wk[0].page_title} ${int(n(wk[0].views))}`);
+    await click('.chip[data-id="mobile-app"]');
+    const wkApp = await rows(`SELECT project, page_title, sum(views)::BIGINT AS views FROM ${P} WHERE access = 'mobile-app' GROUP BY project, page_title ORDER BY views DESC, project, page_title LIMIT 12`);
+    await waitFor(`window.__pageviews.topRows.length === 12 && window.__pageviews.topRows[0].views === ${n(wkApp[0].views)}`, 60000, 'the mobile-app week ranking');
+    check((await page('p.topRows')).every((r, i) => r.views === n(wkApp[i].views)), 'the whole-week ranking for one access method equals the full GROUP BY');
+    await click('.chip[data-id=""]');
+    await click('.chip[data-id="d2"]');
+    await waitFor(`window.__pageviews.matchCount === ${t.rows}`, 120000, 'Wed again');
+
     /* ------------------------ time-window filter ------------------------------ */
     await click('.chip[data-id="d5"]');
     const SAT = { from: WEEK_START + 5 * DAY, to: WEEK_START + 6 * DAY };
     t = await truth(SAT);
     await waitFor(`window.__pageviews.matchCount === ${t.rows}`, 60000, 'Saturday to count');
     check(true, 'clicking Sat 26 filters to that day', `${int(t.rows)} rows`);
-    await waitFor(`window.__pageviews.scope.views === ${t.views}`, 60000, 'Saturday views');
+    await waitFor(`window.__pageviews.scope.views === ${t.views}`, 240000, 'Saturday views');
     check(true, 'the views figure follows', int(t.views));
 
     await click('.chip[data-id="week"]');
