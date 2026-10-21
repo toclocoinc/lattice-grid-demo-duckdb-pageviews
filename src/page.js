@@ -504,7 +504,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
         legend: false,
         title: `Top ${TOP_PAGES} pages`,
         subtitle: 'For the time window, project, access method and search chosen above',
-        margin: { left: 270 },
+        margin: { left: window.innerWidth < 600 ? 150 : 270 },
       });
     } catch (error) {
       topBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));
