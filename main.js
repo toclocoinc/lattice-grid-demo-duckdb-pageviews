@@ -7,8 +7,8 @@
  * evaluations. `start()` is called and the module finishes.
  */
 
-import * as LG from './node_modules/@toclocoinc/lattice-grid/lattice-grid.esm.min.js';
-import { createChart } from './node_modules/@toclocoinc/lattice-grid/modules/charts.esm.min.js';
+import * as LG from 'https://cdn.latticegrid.dev/lattice-grid@1.111.7/lattice-grid.esm.min.js?v=20261022';
+import { createChart } from 'https://cdn.latticegrid.dev/lattice-grid@1.111.7/modules/charts.esm.min.js?v=20261022';
 import { DEMO_LICENCE } from './src/licence.js';
 import { startDuckDB, recordingConnection } from './src/duckdb.js';
 import { buildPage } from './src/page.js';

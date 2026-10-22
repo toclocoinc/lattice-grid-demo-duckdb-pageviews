@@ -38,7 +38,7 @@ The first visit has three slow steps: the query engine (about 34 MB of WebAssemb
 2. Real byte counts. The engine download is DuckDB-Wasm's own progress callback. The Parquet reads are counted by a small wrapper around the worker that reports each response size over a `BroadcastChannel`; the total is the compressed size of the opening window's day files and the two small tables, from `parquet_metadata()`.
 3. Every panel (figures, both charts, the grid) is covered by a loading state until its first answer, so there is no blank space.
 
-## Grid notes (1.111.0)
+## Grid notes (1.111.7)
 
 - Grouping by project, then access method, works: expanded groups load their children and `lastPlan()` carries typed
   `groupValues`.
