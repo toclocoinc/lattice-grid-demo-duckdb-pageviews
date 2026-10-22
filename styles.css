@@ -67,11 +67,67 @@ a { color: var(--accent); }
   cursor: pointer;
 }
 
-.loading { padding: 40px 0; color: var(--page-muted); }
+.loading { padding: 0 0 18px; color: var(--page-muted); }
 .loading.failed .loading-message { color: var(--error); max-width: 800px; }
 .loading-message { margin: 0; }
 
-#dashboard.pending { visibility: hidden; height: 0; overflow: hidden; }
+/* The status line (spinner, words, bar) and the cover over a panel that is still waiting. */
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--card-border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.load-status {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  padding: 14px 16px;
+  text-align: left;
+}
+.load-status[hidden], .panel-loading[hidden], .load-bar[hidden] { display: none; }
+.load-text { margin: 0; color: var(--page-fg); font-size: 14.5px; }
+.load-bar {
+  grid-column: 1 / -1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--card-border);
+  overflow: hidden;
+}
+.load-fill { height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width 0.25s ease-out; }
+.slot { position: relative; min-width: 0; }
+.tiles-slot { margin-bottom: 14px; }
+.tiles-slot .tiles { margin-bottom: 0; }
+.grid-slot { margin-bottom: 14px; }
+.panel-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--page-muted);
+  font-size: 14px;
+  text-align: center;
+}
+.panel-loading p { margin: 0; }
+
+
 
 .controls, .tiles, .grid-section, .plan, .chart-box {
   background: var(--card-bg);
@@ -176,4 +232,3 @@ input.search { width: 260px; }
   .tile-value { font-size: 21px; }
 }
 
-.chart-wait { margin: 16px; color: var(--page-muted); font-size: 14px; }

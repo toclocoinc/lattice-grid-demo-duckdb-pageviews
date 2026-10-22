@@ -12,6 +12,7 @@ import { createChart } from './node_modules/@toclocoinc/lattice-grid/modules/cha
 import { DEMO_LICENCE } from './src/licence.js';
 import { startDuckDB, recordingConnection } from './src/duckdb.js';
 import { buildPage } from './src/page.js';
+import { createStatus, megabytes } from './src/loading.js';
 
 /* Applied before anything is drawn: a grid keeps whatever licence was in force
    when it was built. */
@@ -19,6 +20,8 @@ LG.setLicence(DEMO_LICENCE);
 
 const loading = document.querySelector('#loading');
 const message = loading.querySelector('.loading-message');
+/* The status line is in index.html, so it is on screen from first paint. */
+const status = createStatus(loading.querySelector('.load-status'));
 
 /** The statements DuckDB ran, newest last. The timings and the SQL panel read this. */
 const sqlLog = [];
@@ -30,6 +33,8 @@ const record = (connection) => recordingConnection(connection, (entry) => {
 function showError(error) {
   loading.hidden = false;
   loading.classList.add('failed');
+  status.hide();
+  message.hidden = false;
   message.textContent = `The data could not be loaded: ${String(error?.message ?? error)}. `
     + 'This page runs DuckDB compiled to WebAssembly and reads a Parquet file with HTTP range requests. '
     + 'It needs a browser with WebAssembly and a host that answers 206 Partial Content.';
@@ -39,9 +44,13 @@ function showError(error) {
 async function start() {
   const started = performance.now();
   try {
-    message.textContent = 'Starting DuckDB in your browser...';
-    const { connection, version, close } = await startDuckDB((text) => { message.textContent = text; });
-    message.textContent = 'Opening the Parquet file...';
+    const { connection, version, close, reads } = await startDuckDB(
+      (text) => status.set(text),
+      ({ loaded, total }) => status.set(
+        `Downloading the query engine (about ${megabytes(total)}, first visit only): ${megabytes(loaded)} of ${megabytes(total)}`,
+        loaded / total,
+      ),
+    );
 
     const page = buildPage({
       host: document.querySelector('#dashboard'),
@@ -50,14 +59,17 @@ async function start() {
       connection: record(connection),
       sqlLog,
       duckdbVersion: version,
+      reads,
+      status,
     });
     page.sqlLog = sqlLog;
     window.__pageviews = page;
     window.addEventListener('pagehide', () => { page.destroy(); close(); }, { once: true });
 
     await page.ready;
+    await page.settled;
+    status.hide();
     loading.hidden = true;
-    document.querySelector('#dashboard').classList.remove('pending');
     page.bootMs = Math.round(performance.now() - started);
     console.log('[pageviews demo] ready', { ms: page.bootMs, rows: page.matchCount, duckdb: version });
   } catch (error) {

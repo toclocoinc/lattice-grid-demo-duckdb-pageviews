@@ -23,10 +23,15 @@
           hours a page jumped above its own trailing 24-hour average. Every step is a new query.
         </p>
       </header>
-      <div id="loading" class="loading" role="status">
-        <p class="loading-message">Starting...</p>
+      <div id="loading" class="loading">
+        <div class="load-status" role="status" aria-live="polite">
+          <span class="spinner"></span>
+          <p class="load-text">Starting. The first visit downloads the query engine, so it takes a moment.</p>
+          <div class="load-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" hidden><div class="load-fill"></div></div>
+        </div>
+        <p class="loading-message" role="alert" hidden></p>
       </div>
-      <div id="dashboard" class="pending"></div>
+      <div id="dashboard"></div>
       <footer class="colophon">
         Data: <a href="https://dumps.wikimedia.org/other/pageview_complete/readme.html">Wikimedia pageview_complete</a>,
         user traffic, 21&ndash;27 September 2026, published by the Wikimedia Foundation under

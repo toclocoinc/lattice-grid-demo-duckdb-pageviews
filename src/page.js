@@ -25,6 +25,7 @@ import {
   ACCESS, WINDOWS, DEFAULT_WINDOW, MODES, WEEK_START_MS, WEEK_END_MS, SPIKE_DEFAULT_PROJECT, SPIKE_MIN_VIEWS, TOP_PAGES,
   BASE_FIELDS, SPIKE_FIELDS, fromFiles, daysIn, spikeFrom, columns, fmt, num,
 } from './data.js';
+import { megabytes, slot } from './loading.js';
 
 const HOUR = 3600 * 1000;
 
@@ -66,7 +67,7 @@ const shorten = (text, max = 22) => (text.length > max ? `${text.slice(0, max - 
 
 const isoHour = (ms) => new Date(ms).toISOString().slice(0, 16);
 
-export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVersion }) {
+export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVersion, reads, status }) {
   const URLS = dataUrls();
   /** The day files the selected window touches. */
   const windowFiles = () => daysIn(state.from, state.to).map((i) => URLS.days[i]);
@@ -129,7 +130,12 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
   const gridHost = el('div', 'grid-host');
   gridHost.setAttribute('aria-label', 'Hourly pageviews');
   const planSection = el('details', 'plan');
-  host.append(controls, tiles, chartRow, gridSection, planSection);
+  /* Every panel is covered until its first answer, so no part of the page is blank while the files are read. */
+  const tilesSlot = slot(tiles, 'Counting the matching rows, then summing the views');
+  tilesSlot.el.classList.add('tiles-slot');
+  const gridSlot = slot(gridHost, 'Reading the first window of rows');
+  gridSlot.el.classList.add('grid-slot');
+  host.append(controls, tilesSlot.el, chartRow, gridSection, planSection);
 
   /* ------------------------------------------------------------- controls */
 
@@ -204,6 +210,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     tileValues.views.textContent = fmt.int(built.scope.views);
     tileValues.page.textContent = fmt.ms(built.timings.page);
     tileValues.scope.textContent = fmt.ms(built.timings.scope);
+    if (built.matchCount != null && built.scope.views != null) tilesSlot.hide();
   };
 
   /* --------------------------------------------------------------- charts */
@@ -212,7 +219,20 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
   trendBox.dataset.chart = 'trend';
   const topBox = el('div', 'chart-box top');
   topBox.dataset.chart = 'top';
-  chartRow.append(trendBox, topBox);
+  const trendSlot = slot(trendBox, 'Summing the views for each hour');
+  const topSlot = slot(topBox, 'Ranking the pages');
+  chartRow.append(trendSlot.el, topSlot.el);
+
+  /** Lift a panel's cover once it has drawn something, or after a short wait if it never does. */
+  function uncoverWhenDrawn(box, cover, drawn = 'svg path, svg rect, .chart-error') {
+    if (box.querySelector(drawn)) { cover.hide(); return; }
+    const watch = new MutationObserver(() => {
+      if (!box.querySelector(drawn)) return;
+      watch.disconnect();
+      cover.hide();
+    });
+    watch.observe(box, { childList: true, subtree: true });
+  }
 
   /* ------------------------------------------------------------ the filter */
 
@@ -325,6 +345,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       trendBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));
       console.error('[pageviews demo] chart', error);
     }
+    uncoverWhenDrawn(trendBox, trendSlot);
   }
 
   let mountSequence = 0;
@@ -337,6 +358,9 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     built.grid?.destroy?.();
     gridHost.textContent = '';
     trendBox.textContent = '';
+    gridSlot.show('Reading the first window of rows');
+    uncoverWhenDrawn(gridHost, gridSlot, '.lat-row');
+    trendSlot.show('Summing the views for each hour');
     built.matchCount = null;
     built.mode = state.mode;
     mountedFiles = filesKey();
@@ -374,6 +398,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       const started = performance.now();
       const result = await inner(query, req);
       if (sequence !== mountSequence) return result;
+      gridSlot.hide();
       if (!query.groupBy?.length || !query.groupPath?.length) built.timings.page = Math.round(performance.now() - started);
       if (typeof result.total === 'number' && !query.groupBy?.length) built.matchCount = result.total;
       built.plan = source.lastPlan?.() ?? null;
@@ -385,7 +410,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       }
       paintTiles();
       renderPlan();
-      if (!query.groupBy?.length && chartDue) { const due = chartDue; chartDue = null; due(); }
+      if ((!query.groupBy?.length || state.mode === 'grouped') && chartDue) { const due = chartDue; chartDue = null; due(); }
       return result;
     };
 
@@ -471,6 +496,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       feedTop();
       renderPlan();
     } catch (error) {
+      topSlot.show('The ranking could not be read');
       console.error('[pageviews demo] top pages', error, sql, params);
       built.error = String(error?.message ?? error);
     }
@@ -501,6 +527,7 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       topBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));
       console.error('[pageviews demo] chart', error);
     }
+    uncoverWhenDrawn(topBox, topSlot);
   }
 
   /* ----------------------------------------------------------- the plan */
@@ -561,10 +588,41 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     projectSelect.value = current;
   }
 
-  gridSection.append(gridHost);
+  /**
+   * The size of what the opening views will read: the compressed bytes of the
+   * day files in the window plus the hourly and top-pages tables, from the
+   * Parquet footers (which are fetched anyway). Null where they cannot be read.
+   */
+  async function expectedBytes() {
+    try {
+      const list = [...windowFiles(), URLS.hourly, URLS.top].map((u) => `'${u}'`).join(', ');
+      const result = await connection.query(`SELECT sum(total_compressed_size)::DOUBLE AS bytes FROM parquet_metadata([${list}])`);
+      return num(result.toArray()[0]?.toJSON().bytes) || null;
+    } catch { return null; }
+  }
+
+  /** The reading stage of the status line: real bytes from the read meter against the expected size. */
+  function showReads() {
+    if (!status || !reads) return () => {};
+    const before = reads.bytes;
+    let expected = null;
+    const line = (total) => {
+      const read = total - before;
+      const of = expected ? Math.max(expected, read) : 0;
+      return expected
+        ? [`Reading the day files and the hourly and top-pages tables (${megabytes(read)} of ${megabytes(of)})`, read / of]
+        : [`Reading the day files and the hourly and top-pages tables (${megabytes(read)} so far)`, null];
+    };
+    status.set(...line(before));
+    const stop = reads.onRead((total) => status.set(...line(total)));
+    expectedBytes().then((bytes) => { expected = bytes; status.set(...line(reads.bytes)); });
+    return stop;
+  }
+
+  gridSection.append(gridSlot.el);
   paintControls();
+  const stopReads = showReads();
   mountGrid();
-  topBox.append(el('p', 'chart-wait', 'Ranking pages...'));
   built.ready = (async () => {
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline && !(built.grid.rows.count() > 0 && built.matchCount != null && built.scope.views != null)) {
@@ -575,7 +633,8 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
     built.totalRows = num((await connection.query(`SELECT sum(pages) AS n FROM read_parquet('${URLS.hourly}')`)).toArray()[0].toJSON().n);
     if (total) total.textContent = `${fmt.compact(built.totalRows)} `;
     built.isReady = true;
-    built.settled = Promise.all([refreshTop(), loadProjects()]).then(() => { built.isSettled = true; });
+    built.settled = Promise.all([refreshTop(), loadProjects()]).then(() => { built.isSettled = true; stopReads(); });
+    status?.set('Building the grid, charts and figures');
   })();
 
   built.destroy = () => { built.chart?.destroy?.(); built.grid?.destroy?.(); };
