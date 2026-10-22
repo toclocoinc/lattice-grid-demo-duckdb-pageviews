@@ -140,12 +140,16 @@ export function startServer(port = 0) {
         log.push({ path: file.slice(root.length), status, bytes, range: range || null, size: info.size, at: Date.now() });
       };
 
+      /* Every data response carries Last-Modified, as any real static host does. Without it DuckDB-Wasm's HTTP
+         filesystem has no modification time for the file, and on roughly one load in ten it failed a statement
+         with "Out of Range Error: Overflow in timestamp subtraction" (BACKLOG-0005308). */
       if (request.method === 'HEAD') {
         response.writeHead(200, {
           'content-type': type,
           'content-length': info.size,
           'accept-ranges': 'bytes',
           'cache-control': 'no-store',
+          'last-modified': info.mtime.toUTCString(),
         }).end();
         record('HEAD', 0, 'HEAD');
         return;
@@ -165,6 +169,7 @@ export function startServer(port = 0) {
           'content-range': `bytes ${wanted.start}-${wanted.end}/${info.size}`,
           'accept-ranges': 'bytes',
           'cache-control': 'no-store',
+          'last-modified': info.mtime.toUTCString(),
         });
         record(206, length, String(request.headers.range));
         createReadStream(file, { start: wanted.start, end: wanted.end }).pipe(response);
@@ -176,6 +181,7 @@ export function startServer(port = 0) {
         'content-length': info.size,
         'accept-ranges': 'bytes',
         'cache-control': 'no-store',
+        'last-modified': info.mtime.toUTCString(),
       });
       record(200, info.size, null);
       createReadStream(file).pipe(response);
