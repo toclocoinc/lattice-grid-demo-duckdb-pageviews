@@ -30,6 +30,14 @@ choice; a search or a partial window ranks from the day files). Measured against
 after DuckDB-Wasm loads); whole-week ranking 22.9 s to about 1 s; whole-week rows about 1 s in both; whole-week figures
 (views sum, trend) about 40 s to 3–13 s depending on what else is queued.
 
+## Loading
+
+The first visit has three slow steps: the query engine (about 34 MB of WebAssembly, a fifth of that on the wire), starting it, and reading the opening window from the Parquet files. The page says what it is doing from first paint (pattern shared with the SaaS demo, `src/loading.js`, `src/duckdb.js`):
+
+1. A status line in the static HTML: spinner, one plain-English sentence, and a progress bar wherever the size is known. "Downloading the query engine (about 34 MB, first visit only): n of m MB", "Starting the engine", "Reading the day files and the hourly and top-pages tables (n of m MB)", then "Building the grid, charts and figures".
+2. Real byte counts. The engine download is DuckDB-Wasm's own progress callback. The Parquet reads are counted by a small wrapper around the worker that reports each response size over a `BroadcastChannel`; the total is the compressed size of the opening window's day files and the two small tables, from `parquet_metadata()`.
+3. Every panel (figures, both charts, the grid) is covered by a loading state until its first answer, so there is no blank space.
+
 ## Grid notes (1.111.0)
 
 - Grouping by project, then access method, works: expanded groups load their children and `lastPlan()` carries typed

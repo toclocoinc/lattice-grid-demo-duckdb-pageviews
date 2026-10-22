@@ -345,7 +345,16 @@ export function buildPage({ host, LG, createChart, connection, sqlLog, duckdbVer
       trendBox.append(el('p', 'chart-error', `This chart could not be drawn: ${error.message}`));
       console.error('[pageviews demo] chart', error);
     }
-    uncoverWhenDrawn(trendBox, trendSlot);
+    /* The chart frame and title draw at once; the line waits for the engine's GROUP BY, so the cover waits for that. */
+    const mark = sqlLog.length;
+    const giveUp = Date.now() + 120000;
+    const poll = setInterval(() => {
+      if (sequence !== mountSequence || Date.now() > giveUp
+        || sqlLog.slice(Math.min(mark, sqlLog.length)).some((l) => /GROUP BY ROLLUP\("hour"\)/.test(l.sql)) || trendBox.querySelector('.chart-error')) {
+        clearInterval(poll);
+        setTimeout(() => { if (sequence === mountSequence) trendSlot.hide(); }, 150);
+      }
+    }, 100);
   }
 
   let mountSequence = 0;
