@@ -82,7 +82,16 @@ await mkdir(join(root, 'data'), { recursive: true });
 /* ----------------------------------------------------- download and filter */
 
 const filtered = days.map((day) => join(cache, `filtered-${day.replaceAll('-', '')}-min${minDaily}.txt`));
-/* One day per task, all at once: bzip2 is single-threaded, so a week is about as slow as a day. */
+/* Downloads go one at a time (dumps.wikimedia.org answers 429 to parallel
+   fetches from one client); the bzip2 filtering after each still runs in
+   parallel, since bzip2 is single-threaded. */
+let downloadTurn = Promise.resolve();
+/**
+ * Run one download after the previous one finishes.
+ * @param {() => Promise<void>} job the download
+ * @returns {Promise<void>} settles when this download is done
+ */
+const oneAtATime = (job) => (downloadTurn = downloadTurn.then(job, job));
 await Promise.all(days.map(async (day) => {
   const compact = day.replaceAll('-', '');
   const name = `pageviews-${compact}-user.bz2`;
@@ -94,20 +103,20 @@ await Promise.all(days.map(async (day) => {
     console.log(`${day}: using ${text}`);
     return;
   }
-  if (!(await exists(bz))) {
+  if (!(await exists(bz))) await oneAtATime(async () => {
     console.log(`${day}: downloading ${url}`);
     let response;
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      response = await fetch(url);
+      response = await fetch(url, { headers: { 'User-Agent': 'lattice-grid-demo-duckdb-pageviews/1.0 (https://www.latticegrid.dev; demo data build)' } });
       if (response.ok) break;
       console.log(`  ${response.status}, retrying (${attempt}/5)`);
-      await new Promise((r) => setTimeout(r, 10000 * attempt));
+      await new Promise((r) => setTimeout(r, 30000 * attempt));
     }
     if (!response.ok) throw new Error(`Wikimedia answered ${response.status} for ${url}`);
     await pipeline(Readable.fromWeb(response.body), createWriteStream(`${bz}.part`));
     await run('mv', [`${bz}.part`, bz]);
     console.log(`  ${mb((await stat(bz)).size)}`);
-  }
+  });
   console.log(`${day}: keeping page rows with at least ${minDaily} views that day`);
   /* project, title, access, daily total, hourly string, and the day. The page
      id is dropped: it is absent on some lines and the page does not use it. */
@@ -150,7 +159,7 @@ for (const [i, day] of days.entries()) {
       )
       WHERE page_title <> '-'
       ORDER BY project, hour, page_title, access
-    ) TO '${q(dayFiles[i])}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+    ) TO '${q(dayFiles[i])}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000, WRITE_BLOOM_FILTER false)
   `);
 }
 
@@ -165,7 +174,7 @@ await conn.run(`
     FROM read_parquet([${dayList}])
     GROUP BY project, access, hour
     ORDER BY project, hour, access
-  ) TO '${q(hourlyFile)}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+  ) TO '${q(hourlyFile)}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000, WRITE_BLOOM_FILTER false)
 `);
 
 /* The whole week's most-viewed pages, for the whole-week ranking: the 50 top
@@ -186,7 +195,7 @@ await conn.run(`
       ) AS sums (project, page_title, access, views)
     ) WHERE rank <= 50
     ORDER BY project, access, views DESC
-  ) TO '${q(topFile)}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+  ) TO '${q(topFile)}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000, WRITE_BLOOM_FILTER false)
 `);
 
 /* ------------------------------------------------------------------ report */
